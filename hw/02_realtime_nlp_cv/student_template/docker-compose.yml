@@ -1,34 +1,72 @@
-# Стек ДЗ: Triton + vLLM + gateway + Prometheus + node-exporter — СКЕЛЕТ.
-# Сервисы triton/vllm/gateway допишите сами (# TODO). Обе модели делят один GPU.
+
 name: hw-realtime-inference
 
 services:
   triton:
-    # TODO: image — Triton 24.06 через зеркало NGC по digest (см. ЗАДАНИЕ.md, раздел 2),
-    #       command (tritonserver --model-repository=/models, загрузить
-    #       только модель варианта ${CV_MODEL}, метрики на :8002 вкл. GPU-метрики),
-    #       проброс GPU (deploy.resources.reservations.devices, driver nvidia).
+    image: nvcr.nju.edu.cn/nvidia/tritonserver@sha256:153d3158d96346bc50df7fa6e1c3a96d6dc638249072be20ebbbcae07b8505ca
+    platform: linux/amd64
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --model-control-mode=explicit
+      - --load-model=${CV_MODEL}
+      - --allow-gpu-metrics=true
     volumes:
       - ./model_repository:/models
     ports:
       - "8002:8002"
     shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
 
   vllm:
-    # TODO: image (vLLM — закрепите версию, не latest), command (--model,
-    #       --served-model-name ${LLM_MODEL}, --gpu-memory-utilization, --max-model-len), проброс GPU.
+    image: vllm/vllm-openai:v0.33.0
+    platform: linux/amd64
+    command:
+      - --model
+      - Qwen/Qwen2.5-1.5B-Instruct
+      - --served-model-name
+      - ${LLM_MODEL}
+      - --gpu-memory-utilization
+      - "0.55"
+      - --max-model-len
+      - "4096"
+      - --host
+      - 0.0.0.0
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
     volumes:
       - hf_cache:/root/.cache/huggingface
     ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
 
   gateway:
     build: ./gateway
-    # TODO: environment — JWT_SECRET (обязателен), CV_MODEL, TRITON_URL, VLLM_URL, адреса
-    #       метрик, GPU_NAME, данные студента. Порт наружу (внутри 8080).
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      STUDENT_NAME: ${STUDENT_NAME:?STUDENT_NAME is required}
+      STUDENT_EMAIL: ${STUDENT_EMAIL:?STUDENT_EMAIL is required}
+      CV_MODEL: ${CV_MODEL:?CV_MODEL is required}
+      LLM_MODEL: ${LLM_MODEL:?LLM_MODEL is required}
+      GPU_NAME: ${GPU_NAME:-}
+      TRITON_URL: http://triton:8000
+      VLLM_URL: http://vllm:8000
+      TRITON_METRICS_URL: http://triton:8002/metrics
+      VLLM_METRICS_URL: http://vllm:8000/metrics
+      NODE_METRICS_URL: http://node-exporter:9100/metrics
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
@@ -47,8 +85,14 @@ services:
 
   node-exporter:
     image: prom/node-exporter:v1.8.1
-    ports:
-      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.rootfs=/rootfs
+      - --path.sysfs=/host/sys
     restart: unless-stopped
 
 volumes:
