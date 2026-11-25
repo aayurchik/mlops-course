@@ -342,7 +342,7 @@ async def vision(
             detail="Empty image file",
         )
 
-    tensor = preprocess_image(image_bytes)
+    tensor = await run_in_threadpool(preprocess_image, image_bytes)
 
     try:
         logits = await run_in_threadpool(run_triton, tensor)
